@@ -123,6 +123,54 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Get students who haven't submitted assignments
+router.get('/unsubmitted', async (req, res) => {
+  try {
+    const { week, courseId, year, branch, facultyName } = req.query;
+    
+    // Validate required parameters
+    if (!courseId || !week) {
+      logger.error('Missing required parameters');
+      return res.status(400).json({ 
+        error: 'courseId and week are required parameters',
+        receivedParams: { courseId, week, year, branch, facultyName }
+      });
+    }
+
+    logger.general(`Fetching unsubmitted students with filters - courseId: ${courseId}, week: ${week}, year: ${year}, branch: ${branch}, faculty: ${facultyName}`);
+
+    const query = {
+      'courses.courseId': courseId.toLowerCase(),
+      'courses.results': {
+        $elemMatch: {
+          week: week,
+          score: 0
+        }
+      }
+    };
+
+    if (year) query.year = year;
+    if (branch) query.branch = branch;
+    if (facultyName) query['courses.subjectMentor'] = facultyName;
+
+    logger.general(`Executing query: ${JSON.stringify(query)}`);
+
+    const unsubmittedStudents = await Student.find(query)
+      .select('name rollNumber email branch year courses.$')
+      .lean();
+
+    logger.general(`Found ${unsubmittedStudents.length} unsubmitted students`);
+
+    res.json({
+      count: unsubmittedStudents.length,
+      students: unsubmittedStudents
+    });
+  } catch (error) {
+    logger.error('Error in fetching unsubmitted students:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get student by ID
 router.get('/:id', async (req, res) => {
   try {
@@ -283,60 +331,25 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
   }
 });
 
-// Get students who haven't submitted assignments
-router.get('/unsubmitted', async (req, res) => {
+// Reset all students' course results
+router.post('/reset-results', async (req, res) => {
   try {
-    const { week, courseId, year, branch, facultyName } = req.query;
+    logger.bulkUpload('Starting course results reset process...');
     
-    // Validate required parameters
-    if (!courseId || !week) {
-      logger.error('Missing required parameters');
-      return res.status(400).json({ 
-        error: 'courseId and week are required parameters',
-        receivedParams: { courseId, week, year, branch, facultyName }
-      });
-    }
-
-    logger.general(`Fetching unsubmitted students with filters - courseId: ${courseId}, week: ${week}, year: ${year}, branch: ${branch}, faculty: ${facultyName}`);
-
-    const query = {
-      'courses.courseId': courseId.toLowerCase(),
-      'courses.results': {
-        $elemMatch: {
-          week: week,
-          score: 0
-        }
-      }
-    };
-
-    if (year) query.year = year;
-    if (branch) query.branch = branch;
-    if (facultyName) query['courses.subjectMentor'] = facultyName;
-
-    logger.general(`Executing query: ${JSON.stringify(query)}`);
-
-    const unsubmittedStudents = await Student.find(query)
-      .select('name rollNumber email branch year courses.$')
-      .lean();
-
-    logger.general(`Found ${unsubmittedStudents.length} unsubmitted students`);
-
-    // Log sample student if any found
-    if (unsubmittedStudents.length > 0) {
-      logger.general('Sample student:', JSON.stringify(unsubmittedStudents[0]));
-    }
-
+    const result = await Student.updateMany(
+      {},
+      { $set: { 'courses.$[].results': [] } }
+    );
+    
+    logger.bulkUpload(`Reset completed. Modified ${result.modifiedCount} students`);
+    
     res.json({
-      count: unsubmittedStudents.length,
-      students: unsubmittedStudents,
-      query: query  // Include query in response for debugging
+      message: 'Course results reset successful',
+      modifiedCount: result.modifiedCount
     });
   } catch (error) {
-    logger.error('Error in fetching unsubmitted students:', error);
-    res.status(500).json({ 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    logger.error('Fatal error in resetting course results:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

@@ -105,4 +105,10 @@ Content-Disposition: form-data; name="file"; filename="ns_noc25_ce38_mentee_6.2.
 Content-Type: text/csv
 
 < ./path/to/your/scores.csv
-------WebKitFormBoundary7MA4YWxkTrZu0gW-- 
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### Get unsubmitted students for a specific week
+GET http://localhost:3000/api/students/unsubmitted?courseId=noc25-ce38&week=Week 1 : Assignment 1&branch=CSE&year=2023&facultyName=Dr John Doe 
+
+### Reset all students' course results
+POST {{baseUrl}}/students/reset-results 

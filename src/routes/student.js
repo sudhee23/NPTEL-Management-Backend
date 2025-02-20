@@ -240,29 +240,61 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
     const filename = req.file.originalname;
     logger.bulkUpload(`Processing file: ${filename}`);
 
-    // Remove 'ns_' prefix if it exists and extract course ID
-    const cleanedFilename = filename.replace(/^ns_/, '');
-    const courseMatch = cleanedFilename.match(/noc\d+[-_](ce|cs)\d+/i);
+    // Updated regex with more flexible pattern and detailed logging
+    const courseMatch = filename.match(/ns_noc25_(cs|me|ce|ee|ece)(\d+)/i);
     
     if (!courseMatch) {
       logger.error('Could not extract course ID from filename:', filename);
-      return res.status(400).json({ error: 'Invalid file name format' });
+      return res.status(400).json({ 
+        error: 'Invalid file name format. Expected format: ns_noc25_BRANCH## (where BRANCH can be cs/me/ce/ee/ece)',
+        receivedFilename: filename,
+        fileDetails: {
+          mimetype: req.file.mimetype,
+          size: req.file.size,
+          originalName: req.file.originalname
+        }
+      });
     }
     
-    const courseId = courseMatch[0].toLowerCase().replace('_', '-');
-    logger.bulkUpload(`Extracted course ID: ${courseId}`);
+    const branch = courseMatch[1].toLowerCase();
+    const number = courseMatch[2];
+    const courseId = `noc25-${branch}${number}`;
+    logger.bulkUpload(`Extracted course ID: ${courseId}, Branch: ${branch}`);
 
-    // Read CSV content
-    const fileContent = req.file.buffer.toString();
+    // Read CSV content with error handling
+    let fileContent;
+    try {
+      fileContent = req.file.buffer.toString('utf-8');
+      logger.bulkUpload(`File content length: ${fileContent.length} characters`);
+    } catch (error) {
+      logger.error('Error reading file content:', error);
+      return res.status(400).json({ error: 'Error reading file content' });
+    }
+
+    // Validate CSV content
     const rows = fileContent.split('\n').map(row => row.split(',').map(cell => cell.trim()));
-    const headers = rows[0];
+    if (rows.length < 2) {
+      logger.error('CSV file is empty or has no data rows');
+      return res.status(400).json({ error: 'CSV file is empty or has no data rows' });
+    }
 
-    // Find week score columns
+    const headers = rows[0];
+    logger.bulkUpload(`CSV Headers: ${headers.join(', ')}`);
+
+    // Find week score columns with more detailed logging
     const weekScoreColumns = headers
       .map((header, index) => ({ header, index }))
       .filter(({ header }) => header.toLowerCase().includes('week') && header.toLowerCase().includes('assignment'));
 
-    logger.bulkUpload(`Found ${weekScoreColumns.length} week score columns`);
+    logger.bulkUpload(`Found ${weekScoreColumns.length} week score columns: ${JSON.stringify(weekScoreColumns.map(c => c.header))}`);
+
+    if (weekScoreColumns.length === 0) {
+      logger.error('No week score columns found in CSV');
+      return res.status(400).json({ 
+        error: 'No week score columns found in CSV',
+        headers: headers 
+      });
+    }
 
     const results = await Promise.allSettled(
       rows.slice(1) // Skip header row
@@ -272,19 +304,24 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
             const email = row[2]; // Email is in 3rd column
             const rollNumber = row[3]; // Roll number is in 4th column
 
+            if (!email || !rollNumber) {
+              throw new Error(`Missing email or roll number: ${JSON.stringify({ email, rollNumber })}`);
+            }
+
             // Prepare results array from week scores
-            const results = weekScoreColumns.map(({ index }) => ({
-              week: headers[index],
+            const results = weekScoreColumns.map(({ header, index }) => ({
+              week: header,
               score: parseFloat(row[index]) || 0
             }));
 
-            logger.bulkUpload(`Processing scores for student: ${rollNumber}`);
+            logger.bulkUpload(`Processing scores for student: ${rollNumber}, Email: ${email}`);
 
-            // Update student document
+            // Update student document with branch check
             const student = await Student.findOneAndUpdate(
               {
                 $or: [{ email }, { rollNumber }],
-                'courses.courseId': courseId
+                'courses.courseId': courseId,
+                branch: branch.toUpperCase()
               },
               {
                 $set: {
@@ -295,7 +332,7 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
             );
 
             if (!student) {
-              throw new Error(`Student not found or course not enrolled: ${rollNumber}`);
+              throw new Error(`Student not found or course not enrolled: ${rollNumber} (Branch: ${branch.toUpperCase()})`);
             }
 
             logger.bulkUpload(`Updated scores for student: ${rollNumber}`);
@@ -321,13 +358,17 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
     res.json({
       message: `Processed ${results.length} students`,
       courseId,
+      branch: branch.toUpperCase(),
       successful,
       failed: failed.length,
       errors: failed.map(f => f.reason)
     });
   } catch (error) {
     logger.error('Fatal error in week score update:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: error.message,
+      stack: error.stack
+    });
   }
 });
 

@@ -227,101 +227,112 @@ router.delete('/bulk', async (req, res) => {
   }
 });
 
+// Simplified standardization function that handles both formats
+const standardizeWeekFormat = (weekString) => {
+  if (!weekString) return weekString;
+  
+  // Handle both "Week 01" and "Week 1" formats
+  const match = weekString.toLowerCase().match(/week\s*0*(\d+)(?:\s*assignment)?/i);
+  if (match) {
+    const weekNum = parseInt(match[1], 10); // Remove leading zeros
+    return `Week ${weekNum} Assignment`;
+  }
+  return weekString;
+};
+
 // Update week scores from CSV
 router.post('/updateweekscore', upload.single('file'), async (req, res) => {
   try {
-    logger.bulkUpload('Starting week score update process...');
     if (!req.file) {
-      logger.error('No file received in request');
+      console.log('❌ No file received');
       return res.status(400).json({ error: 'Please upload a CSV file' });
     }
 
-    // Extract course ID from filename
     const filename = req.file.originalname;
-    logger.bulkUpload(`Processing file: ${filename}`);
+    console.log('📁 Processing file:', filename);
 
-    // Updated regex with more flexible pattern and detailed logging
-    const courseMatch = filename.match(/ns_noc25_(cs|me|ce|ee|ece)(\d+)/i);
-    
+    // Updated course pattern matching to include additional branches
+    const courseMatch = filename.match(/noc\d+[-_]?(cs|me|ce|ee|ece|ch|ge|de|mm)(\d+)/i) || // Standard format
+                       filename.match(/(cs|me|ce|ee|ece|ch|ge|de|mm)(\d+)/i) ||             // Short format
+                       filename.match(/(cs|me|ce|ee|ece|ch|ge|de|mm)[-_]?(\d+)/i) ||        // With separator
+                       filename.match(/(\w+)[-_]?(\d+)/i);                                   // Any format
+
     if (!courseMatch) {
-      logger.error('Could not extract course ID from filename:', filename);
+      console.log('❌ Could not extract course info from filename:', filename);
       return res.status(400).json({ 
-        error: 'Invalid file name format. Expected format: ns_noc25_BRANCH## (where BRANCH can be cs/me/ce/ee/ece)',
-        receivedFilename: filename,
-        fileDetails: {
-          mimetype: req.file.mimetype,
-          size: req.file.size,
-          originalName: req.file.originalname
-        }
+        error: 'Could not determine course from filename. Please ensure filename contains course code and number (e.g., cs52, me67, ch45, ge23, de34, mm56)',
+        filename: filename
       });
     }
     
     const branch = courseMatch[1].toLowerCase();
     const number = courseMatch[2];
     const courseId = `noc25-${branch}${number}`;
-    logger.bulkUpload(`Extracted course ID: ${courseId}, Branch: ${branch}`);
+    console.log('📊 Processing for course:', courseId);
 
-    // Read CSV content with error handling
-    let fileContent;
-    try {
-      fileContent = req.file.buffer.toString('utf-8');
-      logger.bulkUpload(`File content length: ${fileContent.length} characters`);
-    } catch (error) {
-      logger.error('Error reading file content:', error);
-      return res.status(400).json({ error: 'Error reading file content' });
-    }
+    const fileContent = req.file.buffer.toString('utf-8');
+    const rows = fileContent.split('\n').map(row => 
+      row.split(',').map(cell => cell.trim())
+    );
 
-    // Validate CSV content
-    const rows = fileContent.split('\n').map(row => row.split(',').map(cell => cell.trim()));
     if (rows.length < 2) {
-      logger.error('CSV file is empty or has no data rows');
       return res.status(400).json({ error: 'CSV file is empty or has no data rows' });
     }
 
     const headers = rows[0];
-    logger.bulkUpload(`CSV Headers: ${headers.join(', ')}`);
+    console.log('📊 Original Headers:', headers);
 
-    // Find week score columns with more detailed logging
+    // More flexible week column detection
     const weekScoreColumns = headers
-      .map((header, index) => ({ header, index }))
-      .filter(({ header }) => header.toLowerCase().includes('week') && header.toLowerCase().includes('assignment'));
+      .map((header, index) => ({ 
+        header: standardizeWeekFormat(header), 
+        originalHeader: header,
+        index 
+      }))
+      .filter(({ header }) => 
+        header.toLowerCase().includes('week') && 
+        header.toLowerCase().includes('assignment')
+      );
 
-    logger.bulkUpload(`Found ${weekScoreColumns.length} week score columns: ${JSON.stringify(weekScoreColumns.map(c => c.header))}`);
+    console.log('Standardized week columns:', weekScoreColumns.map(c => 
+      `${c.originalHeader} -> ${c.header}`
+    ));
 
     if (weekScoreColumns.length === 0) {
-      logger.error('No week score columns found in CSV');
+      console.log('❌ No week score columns found in headers:', headers);
       return res.status(400).json({ 
         error: 'No week score columns found in CSV',
-        headers: headers 
+        headers: headers
       });
     }
 
     const results = await Promise.allSettled(
-      rows.slice(1) // Skip header row
-        .filter(row => row.length >= headers.length) // Skip incomplete rows
+      rows.slice(1)
+        .filter(row => row.length >= headers.length)
         .map(async (row) => {
           try {
-            const email = row[2]; // Email is in 3rd column
-            const rollNumber = row[3]; // Roll number is in 4th column
-
-            if (!email || !rollNumber) {
-              throw new Error(`Missing email or roll number: ${JSON.stringify({ email, rollNumber })}`);
+            const email = row[2]?.toLowerCase();
+            const rollNumber = row[3]?.toUpperCase();
+            
+            if (!email && !rollNumber) {
+              throw new Error('Both email and roll number are missing');
             }
 
-            // Prepare results array from week scores
+            // Prepare results array with standardized week format
             const results = weekScoreColumns.map(({ header, index }) => ({
-              week: header,
+              week: standardizeWeekFormat(header),
               score: parseFloat(row[index]) || 0
             }));
 
-            logger.bulkUpload(`Processing scores for student: ${rollNumber}, Email: ${email}`);
+            console.log(`Processing: Roll Number: ${rollNumber}, Email: ${email}, Course: ${courseId}`);
 
-            // Update student document with branch check
             const student = await Student.findOneAndUpdate(
               {
-                $or: [{ email }, { rollNumber }],
-                'courses.courseId': courseId,
-                branch: branch.toUpperCase()
+                $or: [
+                  { email: { $regex: new RegExp(email, 'i') } },
+                  { rollNumber: { $regex: new RegExp(rollNumber, 'i') } }
+                ],
+                'courses.courseId': courseId
               },
               {
                 $set: {
@@ -332,13 +343,14 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
             );
 
             if (!student) {
-              throw new Error(`Student not found or course not enrolled: ${rollNumber} (Branch: ${branch.toUpperCase()})`);
+              throw new Error(`Student not found or not enrolled in course ${courseId}`);
             }
 
-            logger.bulkUpload(`Updated scores for student: ${rollNumber}`);
+            console.log(`✅ Updated scores for: ${rollNumber || email} in course ${courseId}`);
             return student;
+
           } catch (error) {
-            logger.error(`Error processing row for student ${row[3]}:`, error);
+            console.error(`❌ Error processing row:`, error.message);
             throw { studentId: row[3], error: error.message };
           }
         })
@@ -347,27 +359,21 @@ router.post('/updateweekscore', upload.single('file'), async (req, res) => {
     const successful = results.filter(r => r.status === 'fulfilled').length;
     const failed = results.filter(r => r.status === 'rejected');
 
-    logger.bulkUpload('Week score update completed');
-    logger.bulkUpload(`Successful updates: ${successful}`);
-    logger.bulkUpload(`Failed updates: ${failed.length}`);
-
-    if (failed.length > 0) {
-      logger.error('Failed student updates:', failed.map(f => f.reason));
-    }
+    console.log(`✅ Processing completed for ${courseId}. Success: ${successful}, Failed: ${failed.length}`);
 
     res.json({
-      message: `Processed ${results.length} students`,
+      message: `Processed ${results.length} students for course ${courseId}`,
       courseId,
-      branch: branch.toUpperCase(),
       successful,
       failed: failed.length,
       errors: failed.map(f => f.reason)
     });
+
   } catch (error) {
-    logger.error('Fatal error in week score update:', error);
+    console.error('❌ Fatal error:', error);
     res.status(500).json({ 
-      error: error.message,
-      stack: error.stack
+      error: 'Fatal error in file processing',
+      details: error.message
     });
   }
 });
@@ -391,6 +397,141 @@ router.post('/reset-results', async (req, res) => {
   } catch (error) {
     logger.error('Fatal error in resetting course results:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Add this new route to reset all scores
+router.post('/reset-all-scores', async (req, res) => {
+  try {
+    console.log('🔄 Starting reset of all student scores...');
+    
+    // Update all students: set empty results array for all courses
+    const result = await Student.updateMany(
+      {}, // Match all students
+      { $set: { "courses.$[].results": [] } } // Set empty results array for all courses
+    );
+
+    console.log('✅ Reset completed:', {
+      matched: result.matchedCount,
+      modified: result.modifiedCount
+    });
+
+    res.json({
+      message: 'Successfully reset all student scores',
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount
+    });
+
+  } catch (error) {
+    console.error('❌ Error resetting scores:', error);
+    res.status(500).json({ 
+      error: 'Error resetting scores',
+      details: error.message 
+    });
+  }
+});
+
+// Update the statistics endpoint
+router.get('/upload-statistics', async (req, res) => {
+  try {
+    console.log('\n📊 Starting Statistics Calculation...');
+
+    // Get all students with their courses
+    const allStudents = await Student.find({}).lean();
+    console.log(`Total students in database: ${allStudents.length}`);
+
+    // Initialize statistics object
+    let statistics = {
+      totalStudents: 0,
+      totalSubmissions: 0,
+      courseStats: {},
+      branchStats: {},
+      weekStats: {}
+    };
+
+    // Count all submissions and initialize course stats
+    allStudents.forEach(student => {
+      student.courses?.forEach(course => {
+        const courseId = course.courseId;
+        const branch = courseId.split('-')[1]?.replace(/\d+/g, '').toUpperCase();
+
+        // Initialize course statistics if not exists
+        if (!statistics.courseStats[courseId]) {
+          statistics.courseStats[courseId] = {
+            totalStudents: 0,
+            studentsWithScores: 0,
+            totalSubmissions: 0,
+            branch: branch
+          };
+        }
+
+        // Initialize branch statistics if not exists
+        if (!statistics.branchStats[branch]) {
+          statistics.branchStats[branch] = {
+            totalStudents: 0,
+            studentsWithScores: 0,
+            totalSubmissions: 0
+          };
+        }
+
+        // Count student in course and branch
+        statistics.courseStats[courseId].totalStudents++;
+        statistics.branchStats[branch].totalStudents++;
+
+        // Process results if they exist
+        if (course.results && course.results.length > 0) {
+          statistics.courseStats[courseId].studentsWithScores++;
+          statistics.branchStats[branch].studentsWithScores++;
+
+          course.results.forEach(result => {
+            const weekKey = result.week;
+            
+            // Initialize week statistics if not exists
+            if (!statistics.weekStats[weekKey]) {
+              statistics.weekStats[weekKey] = {
+                totalStudents: 0,
+                byBranch: {}
+              };
+            }
+
+            // Initialize branch in week statistics if not exists
+            if (!statistics.weekStats[weekKey].byBranch[branch]) {
+              statistics.weekStats[weekKey].byBranch[branch] = {
+                students: 0
+              };
+            }
+
+            statistics.weekStats[weekKey].totalStudents++;
+            statistics.weekStats[weekKey].byBranch[branch].students++;
+            statistics.totalSubmissions++;
+            statistics.courseStats[courseId].totalSubmissions++;
+            statistics.branchStats[branch].totalSubmissions++;
+          });
+        }
+      });
+    });
+
+    // Calculate total unique students
+    statistics.totalStudents = allStudents.length;
+
+    // Log detailed information for debugging
+    console.log('\nDetailed Statistics:');
+    console.log('Total Students:', statistics.totalStudents);
+    console.log('Total Submissions:', statistics.totalSubmissions);
+    console.log('\nBranch Statistics:');
+    Object.entries(statistics.branchStats).forEach(([branch, stats]) => {
+      console.log(`${branch}:`, {
+        total: stats.totalStudents,
+        withScores: stats.studentsWithScores,
+        submissions: stats.totalSubmissions
+      });
+    });
+
+    res.json(statistics);
+
+  } catch (error) {
+    console.error('❌ Error calculating statistics:', error);
+    res.status(500).json({ error: 'Error calculating statistics', details: error.message });
   }
 });
 

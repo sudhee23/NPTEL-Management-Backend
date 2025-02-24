@@ -604,7 +604,7 @@ router.get('/upload-statistics', async (req, res) => {
 });
 
 // Get all courses statistics
-router.get('/courses/stats', async (req, res) => {
+router.get('/students/courses/stats', async (req, res) => {
   try {
     logger.general('Fetching course statistics...');
 

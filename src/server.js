@@ -1,24 +1,21 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const studentRoutes = require('./routes/student');  // Changed from courseRoutes
+const studentRoutes = require('./routes/student');
 const logger = require('./utils/logger');
 
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
-// CORS headers
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  next();
-});
-
-// Routes
-app.use('/api/students', studentRoutes);  // Changed to /api/students to match frontend
+// Routes - Update the base path to match frontend expectations
+app.use('/api', studentRoutes);  // This will handle all /api/* routes
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -36,10 +33,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   logger.general(`Server is running on port ${PORT}`);
 });
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  logger.error('Unhandled Promise Rejection:', err);
-});
-
-module.exports = app; 
